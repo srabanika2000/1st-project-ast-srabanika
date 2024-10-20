@@ -1,0 +1,132 @@
+class Node:
+    def __init__(self, node_type: object, left: object = None, right: object = None, value: object = None) -> object:
+        self.type = node_type  # "operator" or "operand"
+        self.left = left
+        self.right = right
+        self.value = value
+
+    def __str__(self):
+        if self.type == "operator":
+            return f"({self.left} {self.value} {self.right})"
+        elif self.type == "operand":
+            return str(self.value)
+
+
+import ast
+import operator
+
+
+def create_rule(rule_string):
+    def parse_expression(expr):
+        if isinstance(expr, ast.BoolOp):
+            op = 'AND' if isinstance(expr.op, ast.And) else 'OR'
+            return Node("operator", parse_expression(expr.values[0]), parse_expression(expr.values[1]), op)
+        elif isinstance(expr, ast.Compare):
+            left = expr.left.id
+            op = expr.ops[0]
+            comparator = expr.comparators[0]
+            op_str = {
+                ast.Gt: '>',
+                ast.Lt: '<',
+                ast.Eq: '=',
+                ast.NotEq: '!=',
+                ast.GtE: '>=',
+                ast.LtE: '<='
+            }[type(op)]
+            return Node("operand",
+                        value=(left, op_str, comparator.n if isinstance(comparator, ast.Num) else comparator.s))
+        return None
+
+    tree = ast.parse(rule_string, mode='eval')
+    return parse_expression(tree.body)
+
+
+def combine_rules(rules):
+    combined_node = None
+    for rule in rules:
+        rule_ast = create_rule(rule)
+        if not combined_node:
+            combined_node = rule_ast
+        else:
+            combined_node = Node("operator", combined_node, rule_ast, "OR")
+    return combined_node
+
+
+def evaluate_rule(json_data, node):
+    def compare(value1, op, value2):
+        ops = {
+            '>': operator.gt,
+            '<': operator.lt,
+            '=': operator.eq,
+            '!=': operator.ne,
+            '>=': operator.ge,
+            '<=': operator.le,
+        }
+        return ops[op](value1, value2)
+
+    if node.type == "operand":
+        attr, op, value = node.value
+        return compare(json_data.get(attr), op, value)
+
+    if node.type == "operator":
+        left_result = evaluate_rule(json_data, node.left)
+        right_result = evaluate_rule(json_data, node.right)
+        if node.value == "AND":
+            return left_result and right_result
+        elif node.value == "OR":
+            return left_result or right_result
+
+    return False
+
+
+# Rule examples
+rule1 = ("((age > 30 and department == 'Sales') or (age < 25 and department == 'Marketing')) and (salary > 50000 or "
+         "experience > 5)")
+rule2 = "((age > 30 and department == 'Marketing')) and (salary > 20000 or experience > 5)"
+
+# Test `create_rule`
+ast_rule1 = create_rule(rule1)
+ast_rule2 = create_rule(rule2)
+print("Rule 1 AST:", ast_rule1)
+print("Rule 2 AST:", ast_rule2)
+
+# Combine rules
+combined_rule = combine_rules([rule1, rule2])
+print("Combined Rule AST:", combined_rule)
+
+# Evaluate rule
+test_data_1 = {"age": 35, "department": "Sales", "salary": 60000, "experience": 3}
+test_data_2 = {"age": 28, "department": "Marketing", "salary": 45000, "experience": 4}
+print("Test 1:", evaluate_rule(test_data_1, combined_rule))  # Should return True or False
+print("Test 2:", evaluate_rule(test_data_2, combined_rule))  # Should return True or False
+
+
+from flask import Flask, request, jsonify
+
+app = Flask(__name__)
+
+
+@app.route('/create_rule', methods=['POST'])
+def create_rule_api():
+    rule_string = request.json.get('rule_string')
+    rule_ast = create_rule(rule_string)
+    return jsonify({"ast": str(rule_ast)})
+
+
+@app.route('/combine_rules', methods=['POST'])
+def combine_rules_api():
+    rules = request.json.get('rules')
+    combined_ast = combine_rules(rules)
+    return jsonify({"combined_ast": str(combined_ast)})
+
+
+@app.route('/evaluate_rule', methods=['POST'])
+def evaluate_rule_api():
+    rule_ast = request.json.get('rule_ast')  # Assuming it's deserialized correctly
+    user_data = request.json.get('data')
+    result = evaluate_rule(user_data, rule_ast)
+    return jsonify({"eligible": result})
+
+
+if __name__ == '__main__':
+    app.run(debug=True)
